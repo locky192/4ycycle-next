@@ -1,114 +1,59 @@
-# Bitcoin 4-Year Cycle Theory - NextJS Application
+# Bitcoin 4-Year Cycle Theory
 
-This is a NextJS rewrite of the original Django Bitcoin 4-year cycle theory application. It displays Bitcoin price predictions based on historical cycle analysis and includes a comprehensive blog post explaining the theory.
+Next.js application with an interactive logarithmic Bitcoin price chart, the original cycle projections, and the accompanying article.
 
-## Features
+## Run locally
 
-- **Interactive Bitcoin Price Chart**: Built with Plotly.js, displaying historical Bitcoin prices with cycle predictions
-- **Real-time Data**: Automatically fetches latest Bitcoin data from CoinGecko API when needed
-- **4-Year Cycle Analysis**: Implements the complete cycle analysis algorithm including:
-  - Historical data processing from CSV
-  - Cycle generation and normalization
-  - Logarithmic growth curve fitting
-  - Price prediction visualization
-- **Comprehensive Blog Post**: Complete explanation of the 4-year cycle theory with embedded images
-- **Responsive Design**: Matches the original Django application's look and feel exactly
-- **Dark Theme**: #1a1a1a background with Inter and Roboto fonts
-
-## Getting Started
-
-1. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-2. **Run the development server**:
-   ```bash
-   npm run dev
-   ```
-
-3. **Open your browser** and navigate to [http://localhost:3000](http://localhost:3000)
-
-## Project Structure
-
-```
-├── src/
-│   ├── app/
-│   │   ├── globals.css          # Global styles matching Django app
-│   │   ├── layout.tsx           # Root layout
-│   │   └── page.tsx             # Main page component
-│   ├── components/
-│   │   ├── BitcoinChart.tsx     # Interactive chart component
-│   │   └── BlogPost.tsx         # Blog post with theory explanation
-│   └── lib/
-│       └── bitcoinAnalysis.ts   # Core analysis algorithms
-├── public/
-│   ├── data/
-│   │   └── bitcoin_data.csv     # Historical Bitcoin data
-│   └── static/
-│       └── images/              # Blog post images
-└── package.json
+```sh
+npm ci
+npm run dev
 ```
 
-## Core Functionality
+Open http://localhost:3000. Production mode:
 
-### Data Management
-- Loads historical Bitcoin data from CSV file
-- Automatically fetches missing data from CoinGecko API
-- Processes and normalizes data for cycle analysis
+```sh
+npm run build
+npm start
+```
 
-### Chart Features
-- Logarithmic scale Bitcoin price visualization
-- Historical cycle overlay
-- Price prediction bands
-- Logarithmic growth curves
-- Interactive Plotly chart with dark theme
+Run builds with the development server stopped; both use `.next`.
 
-### Blog Content
-- Complete 4-year cycle theory explanation
-- 10 embedded figures explaining the analysis
-- Responsive image display
-- Styled to match original Django app exactly
+## Price data
 
-## Technology Stack
+- The original CSV preserves daily historical prices from 27 July 2010 through 3 June 2025.
+- `/api/bitcoin?start=YYYY-MM-DD` backfills subsequent completed UTC daily closes from **Coinbase BTC-USD**, in batches below the 300-candle request limit. Dates are sorted, deduplicated, and checked for missing days. The incomplete current UTC day is excluded.
+- `/api/bitcoin` returns Coinbase's latest BTC-USD trade with its source timestamp. The browser polls every **30 seconds** without caching the quote. This is polling, not a streaming feed.
+- History refreshes every five minutes. Historical responses can be cached for five minutes in the browser and one hour at a shared HTTP cache. The ticker is always uncached.
+- No API key is required. Requests have timeouts and check HTTP status, prices, and timestamps. Failed updates retain historical data and show a warning; failed quotes are marked stale. A quote older than five minutes is rejected by the API, and the UI flags quotes older than 90 seconds.
+- When history is missing, the latest trade remains a separate marker without connecting a line across the missing prices.
 
-- **NextJS 15** with TypeScript
-- **React 18** with hooks
-- **Plotly.js** for interactive charts
-- **Tailwind CSS** for styling
-- **PapaParse** for CSV processing
-- **CoinGecko API** for live Bitcoin data
+Coinbase prices are exchange-specific USD trades; they can differ from the earlier CSV's aggregated prices. Daily candles are labeled by their UTC start date, while the live marker uses the actual trade time.
 
-## Deployment
+The old CoinGecko range request failed once the CSV was more than 365 days behind. The app now uses the same-origin Next.js API instead of requesting that restricted range directly from the browser. A running Next.js server is required; this is not a static-only deployment.
 
-This application is designed to be deployed on Vercel:
+## Chart and model
 
-```bash
+The chart sizes to its container and preserves zoom during automatic updates. It retains the original price assumptions, logarithmic growth anchors, and 2023–2027 cycle projection. Historical bull and bear samples now use the January 13 calendar windows described in the article, independently of where the CSV begins. Growth curves use their original 16 August 2010 epoch. Projection and curve dates therefore align with the price series.
+
+The article and its figures are preserved. The projections are the original theory, not newly fitted forecasts.
+
+## Checks
+
+```sh
+npm run lint
+npx tsc --noEmit
+npm test
 npm run build
 ```
 
-The build output is optimized for static hosting and includes all necessary data files.
+Tests use Node's native TypeScript stripping (Node 22.18+). They cover paginated history, duplicate and incomplete candles, missing-day and HTTP failures, invalid/stale quotes, CSV fallback, and model date alignment.
 
-## API Usage
+## Structure
 
-The application uses the CoinGecko API for fetching recent Bitcoin price data:
-- Endpoint: `https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range`
-- No API key required
-- Automatically handles rate limiting
-- Falls back gracefully if API is unavailable
+- `src/components/BitcoinChart.tsx`: chart, live quote, refresh timers and status.
+- `src/lib/bitcoinAnalysis.ts`: CSV loading, cycle analysis, curves and Plotly traces.
+- `src/lib/bitcoinMarket.ts`: validated Coinbase history and ticker requests.
+- `src/app/api/bitcoin/route.ts`: same-origin market data endpoints.
+- `public/data/bitcoin_data.csv`: original bundled history.
 
-## Comparison with Django Version
-
-This NextJS version provides identical functionality to the original Django application:
-- ✅ Same chart visualization with all prediction bands
-- ✅ Identical blog post content and styling
-- ✅ Same color scheme and typography
-- ✅ Same data processing algorithms
-- ✅ Same Bitcoin data source and API integration
-- ✅ Responsive design matching original layout
-
-The main differences:
-- Uses NextJS/React instead of Django templates
-- Client-side data processing instead of server-side
-- Can be hosted on static hosting platforms like Vercel
-- No database required - uses CSV file and API directly
+Provider references: [Coinbase candles](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-candles), [Coinbase ticker](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-ticker).

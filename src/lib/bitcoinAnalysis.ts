@@ -1,200 +1,76 @@
 import Papa from 'papaparse';
+import type { Data, Layout } from 'plotly.js';
+import type { BitcoinQuote, PricePoint } from './bitcoinMarket';
 
-interface BitcoinDataRow {
-  Start: string;
-  End: string;
-  Open: number;
-  High: number;
-  Low: number;
-  Close: number;
-  Volume: number;
-  'Market Cap': number;
-}
-
-interface ProcessedData {
+export interface ProcessedData {
   index: Date[];
   Value: number[];
+  warning?: string;
 }
 
-// Fetch CoinGecko data between start_date and end_date
-async function fetchCoingeckoData(startDate: Date, endDate: Date): Promise<ProcessedData> {
-  const fromTs = Math.floor(startDate.getTime() / 1000);
-  const toTs = Math.floor(endDate.getTime() / 1000);
-  
-  const url = `https://api.coingecko.com/api/v3/coins/bitcoin/market_chart/range?vs_currency=usd&from=${fromTs}&to=${toTs}`;
-  
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    const records: { date: Date; value: number }[] = [];
-    for (const [timestampMs, price] of data.prices || []) {
-      const date = new Date(timestampMs);
-      records.push({ date, value: price });
+const DAY = 86_400_000;
+const CURVE_ORIGIN = Date.parse('2010-08-16T00:00:00Z');
+
+export function parseBitcoinCsv(csvText: string): ProcessedData {
+  const parsed = Papa.parse<{ Start: string; Close: number }>(csvText, {
+    header: true, skipEmptyLines: true, dynamicTyping: true,
+  });
+  if (parsed.errors.length) throw new Error('Invalid Bitcoin history CSV');
+  const points = new Map<string, number>();
+  for (const row of parsed.data) {
+    const date = row.Start?.slice(0, 10);
+    if (date && Number.isFinite(Date.parse(`${date}T00:00:00Z`)) && Number.isFinite(row.Close) && row.Close > 0) {
+      points.set(date, row.Close);
     }
-    
-    // Sort by date
-    records.sort((a, b) => a.date.getTime() - b.date.getTime());
-    
-    return {
-      index: records.map(r => r.date),
-      Value: records.map(r => r.value)
-    };
-  } catch (error) {
-    console.error('Error fetching CoinGecko data:', error);
-    return { index: [], Value: [] };
   }
+  const dates = [...points.keys()].sort();
+  if (!dates.length) throw new Error('Bitcoin history is empty');
+  return { index: dates.map(date => new Date(`${date}T00:00:00Z`)), Value: dates.map(date => points.get(date)!) };
 }
 
-// Format data for CSV structure (unused but kept for potential future use)
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function formatDataForCsv(data: ProcessedData): BitcoinDataRow[] {
-  // Group by date and create OHLC data
-  const dailyData: { [key: string]: number[] } = {};
-  
-  data.index.forEach((date, i) => {
-    const dateStr = date.toISOString().split('T')[0];
-    if (!dailyData[dateStr]) {
-      dailyData[dateStr] = [];
-    }
-    dailyData[dateStr].push(data.Value[i]);
-  });
-  
-  const result: BitcoinDataRow[] = [];
-  Object.entries(dailyData).forEach(([dateStr, prices]) => {
-    if (prices.length > 0) {
-      const open = prices[0];
-      const high = Math.max(...prices);
-      const low = Math.min(...prices);
-      const close = prices[prices.length - 1];
-      
-      const startDate = new Date(dateStr);
-      const endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000);
-      
-      result.push({
-        Start: startDate.toISOString(),
-        End: endDate.toISOString(),
-        Open: open,
-        High: high,
-        Low: low,
-        Close: close,
-        Volume: 0,
-        'Market Cap': 0
-      });
-    }
-  });
-  
-  return result.sort((a, b) => new Date(b.Start).getTime() - new Date(a.Start).getTime());
-}
-
-// Resample data to daily intervals
-function resampleToDaily(data: ProcessedData): ProcessedData {
-  const dailyData: { [key: string]: number } = {};
-  
-  data.index.forEach((date, i) => {
-    const dateStr = date.toISOString().split('T')[0];
-    dailyData[dateStr] = data.Value[i]; // Use last value of the day
-  });
-  
-  const dates = Object.keys(dailyData).sort();
-  return {
-    index: dates.map(d => new Date(d)),
-    Value: dates.map(d => dailyData[d])
-  };
-}
-
-// Main function to get Bitcoin data
 export async function getBitcoinData(): Promise<ProcessedData> {
+  const response = await fetch('/data/bitcoin_data.csv');
+  if (!response.ok) throw new Error('Unable to load Bitcoin history');
+  const history = parseBitcoinCsv(await response.text());
+  const nextDay = new Date(history.index.at(-1)!.getTime() + DAY).toISOString().slice(0, 10);
   try {
-    // Load CSV data
-    const csvResponse = await fetch('/data/bitcoin_data.csv');
-    const csvText = await csvResponse.text();
-    
-    const parseResult = Papa.parse<BitcoinDataRow>(csvText, {
-      header: true,
-      skipEmptyLines: true,
-      dynamicTyping: true
-    });
-    
-    if (parseResult.errors.length > 0) {
-      console.error('CSV parsing errors:', parseResult.errors);
+    const response = await fetch(`/api/bitcoin?start=${nextDay}`);
+    if (!response.ok) throw new Error('Unable to update Bitcoin history');
+    const { prices } = await response.json() as { prices: PricePoint[] };
+    if (!Array.isArray(prices)) throw new Error('Invalid Bitcoin history response');
+    for (const point of prices) {
+      history.index.push(new Date(`${point.date}T00:00:00Z`));
+      history.Value.push(point.value);
     }
-    
-    const bitcoinData = parseResult.data
-      .filter(row => row.Close && row.Close > 0)
-      .map(row => ({
-        date: new Date(row.Start),
-        value: row.Close
-      }))
-      .sort((a, b) => a.date.getTime() - b.date.getTime());
-    
-    // Get latest date in CSV and today's date
-    const latestCsvDate = new Date(Math.max(...bitcoinData.map(d => d.date.getTime())));
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    const daysBehind = Math.floor((today.getTime() - latestCsvDate.getTime()) / (24 * 60 * 60 * 1000));
-    
-    let allData = bitcoinData;
-    
-    // Fetch missing data if needed
-    if (daysBehind > 0) {
-      const fetchStart = new Date(latestCsvDate.getTime() + 24 * 60 * 60 * 1000);
-      const fetchEnd = new Date();
-      
-      const newData = await fetchCoingeckoData(fetchStart, fetchEnd);
-      
-      if (newData.index.length > 0) {
-        const resampledData = resampleToDaily(newData);
-        const newRecords = resampledData.index.map((date, i) => ({
-          date,
-          value: resampledData.Value[i]
-        }));
-        
-        allData = [...bitcoinData, ...newRecords];
-      }
-    }
-    
-    return {
-      index: allData.map(d => d.date),
-      Value: allData.map(d => d.value)
-    };
-    
-  } catch (error) {
-    console.error('Error loading Bitcoin data:', error);
-    throw error;
+  } catch {
+    history.warning = `History update unavailable. Daily prices end ${history.index.at(-1)!.toISOString().slice(0, 10)}. Retrying automatically.`;
   }
+  return history;
+}
+
+export async function getBitcoinQuote(): Promise<BitcoinQuote> {
+  const response = await fetch('/api/bitcoin', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Live BTC quote unavailable. Retrying automatically.');
+  return response.json();
 }
 
 // Generate cycles from Bitcoin data
 export function genCycles(bitcoinData: ProcessedData): number[][] {
-  const cycleStart = 149;
-  const bullLength = 1096;
-  const cycleLength = 1461;
   const cycles: number[][] = [];
-  
-  // Generate 3 bull cycles
-  for (let i = 0; i < 3; i++) {
-    const startIdx = cycleStart + cycleLength * i + 1;
-    const endIdx = cycleStart + cycleLength * i + bullLength;
-    
-    if (endIdx < bitcoinData.Value.length) {
-      const cycle = bitcoinData.Value.slice(startIdx, endIdx);
-      cycles.push(normalizeArray(cycle, 1, 2));
+  // Select calendar windows rather than assuming CSV row zero matches the model epoch.
+  for (const phase of ['bull', 'bear']) {
+    for (const year of [2011, 2015, 2019]) {
+      const start = Date.parse(`${year + (phase === 'bear' ? 3 : 0)}-01-13T00:00:00Z`);
+      const end = Date.parse(`${year + (phase === 'bear' ? 4 : 3)}-01-13T00:00:00Z`);
+      const values = bitcoinData.Value.filter((_, i) => {
+        const timestamp = bitcoinData.index[i].getTime();
+        return timestamp >= start && timestamp < end;
+      });
+      if (values.length !== (end - start) / DAY) throw new Error('Incomplete historical cycle');
+      cycles.push(normalizeArray(values, 1, 2));
     }
   }
-  
-  // Generate 3 bear cycles
-  for (let i = 0; i < 3; i++) {
-    const startIdx = cycleStart + bullLength + cycleLength * i + 1;
-    const endIdx = cycleStart + cycleLength * i + cycleLength;
-    
-    if (endIdx < bitcoinData.Value.length) {
-      const cycle = bitcoinData.Value.slice(startIdx, endIdx);
-      cycles.push(normalizeArray(cycle, 1, 2));
-    }
-  }
-  
+
   // Calculate averages
   cycleAverage(cycles);
   
@@ -203,9 +79,11 @@ export function genCycles(bitcoinData: ProcessedData): number[][] {
 
 // Normalize array to log scale
 export function normalizeArray(arr: number[], a: number, b: number): number[] {
+  if (!arr.length) return [];
   const arrMin = Math.min(...arr);
   const arrMax = Math.max(...arr);
   
+  if (arrMin === arrMax) return arr.map(() => a);
   const logMin = Math.log10(arrMin);
   const logMax = Math.log10(arrMax);
   
@@ -310,32 +188,30 @@ export function fitCurve(points: number[][], data: ProcessedData): [number[], nu
   const alpha = -slope;
   
   // Generate fitted curve
-  const xFit = Array.from({ length: data.Value.length + 1500 }, (_, i) => i);
+  const lastDay = Math.floor((data.index.at(-1)!.getTime() - CURVE_ORIGIN) / DAY);
+  const xFit = Array.from({ length: lastDay + 1501 }, (_, i) => i + 1);
   const yFit = xFit.map(xi => k * Math.pow(xi, -alpha));
   
   return [xFit, yFit];
 }
 
 // Create the Plotly chart
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createPlot(data: ProcessedData, logCurves: [number[], number[]][], cycles: number[][]): { data: any[]; layout: any } {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const traces: any[] = [];
-  
-  // Create date array
-  const startDate = new Date('2010-08-16');
-  const today = new Date();
-  const endDate = new Date(today.getTime() + 1500 * 24 * 60 * 60 * 1000);
-  const dateArray: Date[] = [];
-  
-  for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-    dateArray.push(new Date(d));
-  }
-  
+export function createPlot(data: ProcessedData, logCurves: [number[], number[]][], cycles: number[][], quote?: BitcoinQuote | null): { data: Data[]; layout: Partial<Layout> } {
+  const traces: Data[] = [];
+
+  const curveDates = logCurves[0][0].map(day => new Date(CURVE_ORIGIN + day * DAY));
+  const predictionDates = (start: string, length: number) =>
+    Array.from({ length }, (_, i) => new Date(Date.parse(start) + i * DAY));
+  const lastCloseDay = data.index.at(-1)!.getTime();
+  const quoteIsNewer = quote && Date.parse(quote.time) >= lastCloseDay + DAY &&
+    Date.parse(quote.time) < lastCloseDay + 2 * DAY;
+
   // Main Bitcoin price trace
   traces.push({
-    x: data.index,
-    y: data.Value,
+    x: quoteIsNewer ? [...data.index, new Date(quote.time)] : data.index,
+    y: quoteIsNewer ? [...data.Value, quote.price] : data.Value,
+    line: { color: '#f7931a', width: 2 },
+    hovertemplate: '%{x|%d %b %Y}<br>$%{y:,.2f}<extra>Bitcoin Price</extra>',
     mode: 'lines',
     name: 'Bitcoin Price',
     type: 'scatter'
@@ -343,7 +219,7 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
   
   // Upper and lower bound curves
   traces.push({
-    x: dateArray,
+    x: curveDates,
     y: logCurves[0][1],
     mode: 'lines',
     name: 'Upper Bound',
@@ -352,7 +228,7 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
   });
   
   traces.push({
-    x: dateArray,
+    x: curveDates,
     y: logCurves[1][1],
     mode: 'lines',
     name: 'Lower Bound',
@@ -362,11 +238,10 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
   
   // Add cycle predictions if available
   if (cycles.length > 6) {
-    const cycleStartIdx = 149 + 1461 * 3;
     const cycleData = normalizeArray(cycles[6], 18000, 160000);
     
     traces.push({
-      x: dateArray.slice(cycleStartIdx, cycleStartIdx + cycleData.length),
+      x: predictionDates('2023-01-13T00:00:00Z', cycleData.length),
       y: cycleData,
       mode: 'lines',
       name: 'Cycles',
@@ -376,7 +251,7 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
     
     // Upper boundary
     traces.push({
-      x: dateArray.slice(cycleStartIdx, cycleStartIdx + cycleData.length),
+      x: predictionDates('2023-01-13T00:00:00Z', cycleData.length),
       y: cycleData.map(v => v * 1.5),
       fill: 'tonexty',
       mode: 'none',
@@ -387,7 +262,7 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
     
     // Lower boundary
     traces.push({
-      x: dateArray.slice(cycleStartIdx, cycleStartIdx + cycleData.length),
+      x: predictionDates('2023-01-13T00:00:00Z', cycleData.length),
       y: cycleData.map(v => v * 0.5),
       fill: 'tonexty',
       mode: 'none',
@@ -399,11 +274,10 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
   
   // Add bear market predictions
   if (cycles.length > 9) {
-    const bearStartIdx = 149 + 1461 * 3 + 1094;
     const bearData = normalizeArray(cycles[9], 53000, 153000);
     
     traces.push({
-      x: dateArray.slice(bearStartIdx, bearStartIdx + bearData.length),
+      x: predictionDates('2026-01-13T00:00:00Z', bearData.length),
       y: bearData,
       mode: 'lines',
       name: 'Cycles',
@@ -412,7 +286,7 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
     });
     
     traces.push({
-      x: dateArray.slice(bearStartIdx, bearStartIdx + bearData.length),
+      x: predictionDates('2026-01-13T00:00:00Z', bearData.length),
       y: bearData.map(v => v * 1.5),
       fill: 'tonexty',
       mode: 'none',
@@ -422,7 +296,7 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
     });
     
     traces.push({
-      x: dateArray.slice(bearStartIdx, bearStartIdx + bearData.length),
+      x: predictionDates('2026-01-13T00:00:00Z', bearData.length),
       y: bearData.map(v => v * 0.5),
       fill: 'tonexty',
       mode: 'none',
@@ -432,7 +306,20 @@ export function createPlot(data: ProcessedData, logCurves: [number[], number[]][
     });
   }
   
-  const layout = {
+  // A separate marker keeps a current quote visible even when history is unavailable,
+  // without drawing a fictitious line across missing daily prices.
+  if (quote) {
+    traces.push({
+      x: [new Date(quote.time)], y: [quote.price], type: 'scatter', mode: 'markers',
+      name: 'Latest BTC trade', marker: { color: '#f7931a', size: 7 },
+      hovertemplate: '%{x|%d %b %Y %H:%M UTC}<br>$%{y:,.2f}<extra>Coinbase BTC-USD</extra>',
+    });
+  }
+
+  const layout: Partial<Layout> = {
+    autosize: true,
+    uirevision: 'bitcoin-cycle',
+    hovermode: 'closest',
     showlegend: false,
     paper_bgcolor: '#1a1a1a',
     plot_bgcolor: '#1a1a1a',

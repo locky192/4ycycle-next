@@ -6,11 +6,12 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint src",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
     "@types/papaparse": "^5.3.16",
-    "next": "15.3.3",
+    "next": "15.5.29",
     "papaparse": "^5.5.3",
     "plotly.js": "^3.0.1",
     "react": "^19.0.0",
@@ -25,7 +26,7 @@
     "@types/react-dom": "^19",
     "@types/react-plotly.js": "^2.6.3",
     "eslint": "^9",
-    "eslint-config-next": "15.3.3",
+    "eslint-config-next": "15.5.29",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
