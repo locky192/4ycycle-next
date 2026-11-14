@@ -18,6 +18,19 @@ npm start
 
 Run builds with the development server stopped; both use `.next`.
 
+## Production deployment
+
+The existing Vercel project is **`seconds-edge/4ycycle-next`** (project ID `prj_buFIELJYyAtE6ejwNceUTZNu1QFM`), serving https://www.4ycycle.info.
+
+```sh
+vercel link --yes --scope seconds-edge --project prj_buFIELJYyAtE6ejwNceUTZNu1QFM
+vercel deploy --prod --scope seconds-edge
+```
+
+Sign into the Vercel account that owns SecondsEdge before deploying. Commits must use that owner's verified email for Vercel's commit attribution check.
+
+Vercel's configured Git integration points to `Labrys-Locky/4ycycle-next`. This checkout's `locky192/4ycycle-next` remote is a separate repository, so pushing here does not update the production project automatically. The commands above deploy the local source directly to the existing project.
+
 ## Price data
 
 - The original CSV preserves daily historical prices from 27 July 2010 through 3 June 2025.
